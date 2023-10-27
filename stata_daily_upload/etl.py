@@ -1,76 +1,29 @@
 import logging
-import common
-import os
-import json
-from stata_daily_upload import credentials
+
 import common.change_tracking as ct
 import ods_publish.etl_id as odsp
-import datetime
+from stata_daily_upload import credentials
+from stata_daily_upload.uploader import Uploader
 
 
 def main():
-    # Open the JSON file where the uploads are saved
-    path_uploads = os.path.join(credentials.path_work, 'StatA', 'stata_daily_uploads.json')
-    with open(path_uploads, 'r') as jsonfile:
-        uploads = json.load(jsonfile)
-
+    uploader = Uploader(credentials.path_work, credentials.ftp_server, credentials.ftp_user, credentials.ftp_pass)
+    uploads, path_uploads = uploader.read_uploads()
     if ct.has_changed(path_uploads):
-        logging.info('Uploads have changed. Upload to FTP...')
-        remote_path = 'FST-OGD/archive_stata_daily_uploads'
-        common.upload_ftp(path_uploads, credentials.ftp_server, credentials.ftp_user,
-                          credentials.ftp_pass, remote_path)
-        # Rename the file on the FTP server
-        from_name = f"{remote_path}/stata_daily_uploads.json"
-        to_name = f"stata_daily_uploads_{datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.json"
-        common.rename_ftp(from_name, to_name, credentials.ftp_server, credentials.ftp_user, credentials.ftp_pass)
-        ct.update_hash_file(path_uploads)
+        uploader.upload_backup_to_ftp(path_uploads)
 
-    # TODO: Refactor
+    # Iterate over all uploads and upload the files to the FTP server and publish the ODS datasets
     file_not_found_errors = []
     for upload in uploads:
-        file_property = upload['file']
         try:
-            changed = False
-            if isinstance(file_property, list):
-                for file in file_property:
-                    file_path = os.path.join(credentials.path_work, file)
-                    if (not upload.get('embargo')) or (upload.get('embargo') and common.is_embargo_over(file_path)):
-                        if ct.has_changed(file_path, method='modification_date'):
-                            changed = True
-                            ct.update_mod_timestamp_file(file_path)
-                            common.upload_ftp(file_path, credentials.ftp_server, credentials.ftp_user, credentials.ftp_pass, upload['dest_dir'])
-                    if upload.get('make_public_embargo') and common.is_embargo_over(file_path):
-                        ods_id_property = upload['ods_id']
-                        if isinstance(ods_id_property, list):
-                            for single_ods_id in ods_id_property:
-                                odsp.ods_set_general_access_policy(single_ods_id, 'domain', True)
-                        else:
-                            odsp.ods_set_general_access_policy(ods_id_property, 'domain', True)
-
-            else:
-                file_path = os.path.join(credentials.path_work, upload['file'])
-                if (not upload.get('embargo')) or (upload.get('embargo') and common.is_embargo_over(file_path)):
-                    if ct.has_changed(file_path, method='modification_date'):
-                        changed = True
-                        ct.update_mod_timestamp_file(file_path)
-                        common.upload_ftp(file_path, credentials.ftp_server, credentials.ftp_user, credentials.ftp_pass, upload['dest_dir'])
-                if upload.get('make_public_embargo') and common.is_embargo_over(file_path):
-                    ods_id_property = upload['ods_id']
-                    if isinstance(ods_id_property, list):
-                        for single_ods_id in ods_id_property:
-                            odsp.ods_set_general_access_policy(single_ods_id, 'domain', True)
-                    else:
-                        odsp.ods_set_general_access_policy(ods_id_property, 'domain', True)
+            changed = uploader.handle_files(upload)
             if changed:
-                ods_id_property = upload['ods_id']
-                if isinstance(ods_id_property, list):
-                    for single_ods_id in ods_id_property:
-                        odsp.publish_ods_dataset_by_id(single_ods_id)
-                else:
-                    odsp.publish_ods_dataset_by_id(ods_id_property)
-
+                ods_ids = upload['ods_id'] if isinstance(upload['ods_id'], list) else [upload['ods_id']]
+                for ods_id in ods_ids:
+                    odsp.publish_ods_dataset_by_id(ods_id)
         except FileNotFoundError as e:
             file_not_found_errors.append(e)
+    # If there were any FileNotFoundError, raise an exception
     error_count = len(file_not_found_errors)
     if error_count > 0:
         for e in file_not_found_errors:
