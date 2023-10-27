@@ -62,8 +62,7 @@ class Uploader:
         for file in files:
             file_path = os.path.join(self.path_work, file)
             is_embargoed = upload.get('embargo')
-            is_embargo_over = common.is_embargo_over(file_path)
-            if not is_embargoed or (is_embargoed and is_embargo_over):
+            if not is_embargoed or (is_embargoed and common.is_embargo_over(file_path)):
                 if ct.has_changed(file_path, method='modification_date'):
                     changed = True
                     self.upload_files_to_ftp(file_path, upload['dest_dir'])
